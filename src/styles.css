@@ -919,6 +919,80 @@ kbd {
   white-space: nowrap;
 }
 
+/* ---- 短促爆音修复 ---- */
+
+.pop-checkall {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 12px;
+  margin-bottom: 0;
+}
+
+.pop-checkall input {
+  margin: 0;
+}
+
+.pop-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+.pop-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 6px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+}
+
+.pop-row-checked {
+  border-color: var(--border);
+  background: rgba(94, 177, 255, 0.08);
+}
+
+.pop-row input[type='checkbox'] {
+  margin: 0;
+}
+
+.pop-preview {
+  padding: 2px 8px;
+  font-size: 12px;
+}
+
+.pop-time {
+  flex: 1;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  font-size: 12px;
+}
+
+.pop-dur {
+  color: var(--muted);
+}
+
+.pop-channels {
+  display: flex;
+  gap: 4px;
+}
+
+.pop-channel-tag {
+  background: #21262d;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 1px 6px;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--accent);
+  white-space: nowrap;
+}
+
 /* ---- 章节文件导入预览 ---- */
 
 .imp-overlay {

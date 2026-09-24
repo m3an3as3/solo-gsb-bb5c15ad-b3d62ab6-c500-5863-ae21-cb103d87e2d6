@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
-    "test": "npm run test:ops && npm run test:chain && npm run test:history && npm run test:silence && npm run test:loudness && npm run test:fade && npm run test:import && npm run test:transcript && npm run test:audiopack && npm run test:muting && npm run test:repeat",
+    "test": "npm run test:ops && npm run test:chain && npm run test:history && npm run test:silence && npm run test:loudness && npm run test:fade && npm run test:import && npm run test:transcript && npm run test:audiopack && npm run test:muting && npm run test:repeat && npm run test:pop",
     "test:ops": "esbuild scripts/test-chapterOps.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/test-ops.mjs && node node_modules/.cache/test-ops.mjs",
     "test:chain": "esbuild scripts/test-chainOps.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/test-chain.mjs && node node_modules/.cache/test-chain.mjs",
     "test:history": "esbuild scripts/test-history.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/test-history.mjs && node node_modules/.cache/test-history.mjs",
@@ -18,7 +18,8 @@
     "test:transcript": "esbuild scripts/test-transcriptCoverage.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/test-transcript.mjs && node node_modules/.cache/test-transcript.mjs",
     "test:audiopack": "esbuild scripts/test-audioPack.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/test-audiopack.mjs && node node_modules/.cache/test-audiopack.mjs",
     "test:muting": "esbuild scripts/test-muting.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/test-muting.mjs && node node_modules/.cache/test-muting.mjs",
-    "test:repeat": "esbuild scripts/test-repeatSearch.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/test-repeat.mjs && node node_modules/.cache/test-repeat.mjs"
+    "test:repeat": "esbuild scripts/test-repeatSearch.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/test-repeat.mjs && node node_modules/.cache/test-repeat.mjs",
+    "test:pop": "esbuild scripts/test-popRepair.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/test-pop.mjs && node node_modules/.cache/test-pop.mjs"
   },
   "dependencies": {
     "react": "^18.3.1",

@@ -24,6 +24,14 @@ import {
   type MutedPcm,
 } from './audio/muting';
 import {
+  mergeCrossChannelRuns,
+  repairPops,
+  encodeRepairedWav,
+  type PopEvent,
+  type RepairedPcm,
+} from './audio/popRepair';
+import { PopScanSupersededError, PopRepairWorkerClient } from './audio/PopRepairWorkerClient';
+import {
   RMS_WINDOW_SEC,
   computeRmsWindows,
   findSilenceSegments,
@@ -37,6 +45,7 @@ import { FadePanel } from './components/FadePanel';
 import { ImportDialog } from './components/ImportDialog';
 import { LoudnessPanel } from './components/LoudnessPanel';
 import { MutePanel } from './components/MutePanel';
+import { PopRepairPanel } from './components/PopRepairPanel';
 import { RepeatSearchPanel } from './components/RepeatSearchPanel';
 import { SilencePanel } from './components/SilencePanel';
 import { TransportBar } from './components/TransportBar';
@@ -91,6 +100,11 @@ export default function App() {
   const repeatClientRef = useRef<RepeatSearchWorkerClient | null>(null);
   if (!repeatClientRef.current) repeatClientRef.current = new RepeatSearchWorkerClient();
   const repeatClient = repeatClientRef.current;
+
+  // 短促爆音扫描同样在独立 Web Worker 中进行；连续扫描只保留最新一次
+  const popClientRef = useRef<PopRepairWorkerClient | null>(null);
+  if (!popClientRef.current) popClientRef.current = new PopRepairWorkerClient();
+  const popClient = popClientRef.current;
 
   const [fileName, setFileName] = useState<string | null>(null);
   const [peaks, setPeaks] = useState<Peaks | null>(null);
@@ -166,9 +180,27 @@ export default function App() {
   const [muteStale, setMuteStale] = useState(false);
   /** 试听用的处理后 AudioBuffer（与 mutedPcmRef 同一份 PCM） */
   const mutedBufferRef = useRef<AudioBuffer | null>(null);
-  const [auditioning, setAuditioning] = useState(false);
+  /** 当前试听的是哪一份处理后音频（消音 / 爆音修复）；null 为原始缓冲 */
+  const [auditionKind, setAuditionKind] = useState<'muted' | 'repaired' | null>(null);
+  const auditioning = auditionKind !== null;
   /** 停止试听并切回原始缓冲（供载入新音频等场景复用） */
   const stopAuditionRef = useRef<(restoreOriginal?: boolean) => void>(() => {});
+
+  // ---- 短促爆音修复：扫描结果（跨声道合并事件）+ 勾选 + 修复结果 ----
+  const [popEvents, setPopEvents] = useState<PopEvent[] | null>(null);
+  const [popScanning, setPopScanning] = useState(false);
+  const [popError, setPopError] = useState<string | null>(null);
+  const [popChecked, setPopChecked] = useState<ReadonlySet<string>>(new Set());
+  /** 单调递增 token：连续扫描 / 换音频时，旧扫描结果一律作废 */
+  const popTokenRef = useRef(0);
+  /** 最近一次「生成修复音频」的结果 PCM；勾选再变动即作废 */
+  const repairedPcmRef = useRef<RepairedPcm | null>(null);
+  const [repairedResult, setRepairedResult] = useState<RepairedPcm | null>(null);
+  /** 生成结果时的勾选快照（事件 id 排序串）；与当前勾选不同即过期 */
+  const repairedKeyRef = useRef<string | null>(null);
+  const [repairStale, setRepairStale] = useState(false);
+  /** 试听用的修复后 AudioBuffer（与 repairedPcmRef 同一份 PCM） */
+  const repairedBufferRef = useRef<AudioBuffer | null>(null);
 
   // ---- 重复录制定位：以选中章节为样本在整段录音中查找重复片段 ----
   const [repeatHits, setRepeatHits] = useState<RepeatHit[] | null>(null);
@@ -296,12 +328,12 @@ export default function App() {
     engine.onEnded = () => {
       previewRef.current = null;
       setPlaying(false);
-      setAuditioning((a) => {
-        if (a) {
+      setAuditionKind((kind) => {
+        if (kind !== null) {
           engine.setPlaybackBuffer(null);
-          return false;
+          return null;
         }
-        return a;
+        return kind;
       });
     };
     let raf = 0;
@@ -320,8 +352,9 @@ export default function App() {
       engine.dispose();
       peaksClient.dispose();
       repeatClient.dispose();
+      popClient.dispose();
     },
-    [engine, peaksClient, repeatClient],
+    [engine, peaksClient, repeatClient, popClient],
   );
 
   /**
@@ -373,7 +406,19 @@ export default function App() {
         setMuteError(null);
         setMutedResult(null);
         setMuteStale(false);
-        setAuditioning(false);
+        // 短促爆音扫描 / 勾选 / 修复结果同样按旧缓冲计算：全部作废
+        popTokenRef.current += 1;
+        popClient.cancel();
+        setPopEvents(null);
+        setPopScanning(false);
+        setPopError(null);
+        setPopChecked(new Set());
+        repairedPcmRef.current = null;
+        repairedKeyRef.current = null;
+        repairedBufferRef.current = null;
+        setRepairedResult(null);
+        setRepairStale(false);
+        setAuditionKind(null);
         // 重复定位结果按旧缓冲计算：与进行中的搜索一并作废
         repeatTokenRef.current += 1;
         repeatClient.cancel();
@@ -540,7 +585,7 @@ export default function App() {
     (restoreOriginal = true) => {
       engine.stop();
       if (restoreOriginal) engine.setPlaybackBuffer(null);
-      setAuditioning(false);
+      setAuditionKind(null);
     },
     [engine],
   );
@@ -708,7 +753,7 @@ export default function App() {
   const invalidateMuteResult = useCallback(() => {
     engine.stop();
     engine.setPlaybackBuffer(null);
-    setAuditioning(false);
+    setAuditionKind(null);
     mutedPcmRef.current = null;
     mutedFromRegionsRef.current = null;
     mutedBufferRef.current = null;
@@ -786,7 +831,7 @@ export default function App() {
   /** 试听处理后的完整音频（与下载同源）；再点一次停止。 */
   const toggleAudition = useCallback(() => {
     if (!mutedBufferRef.current) return;
-    if (auditioning) {
+    if (auditionKind !== null) {
       stopAudition();
       return;
     }
@@ -796,8 +841,8 @@ export default function App() {
     setPlayhead(from);
     engine.play(from);
     setPlaying(true);
-    setAuditioning(true);
-  }, [engine, auditioning, playhead, stopAudition]);
+    setAuditionKind('muted');
+  }, [engine, auditionKind, playhead, stopAudition]);
 
   /** 下载处理后完整音频的 16-bit PCM WAV（总时长 / 声道 / 采样率不变）。 */
   const downloadMutedWav = useCallback(() => {
@@ -833,6 +878,156 @@ export default function App() {
       end: r.endFrame / buffer.sampleRate,
     }));
   }, [muteRegions, duration]);
+
+  // ---- 短促爆音修复 ----
+  /** 当前勾选集合的稳定快照串（与生成时的快照比较判断结果是否过期）。 */
+  const popCheckedKey = useCallback(
+    (events: PopEvent[] | null, checked: ReadonlySet<string>) =>
+      (events ?? [])
+        .map((e) => e.id)
+        .filter((id) => checked.has(id))
+        .sort()
+        .join(','),
+    [],
+  );
+
+  /** 旧修复结果（试听缓冲、过期态）作废；用于重新扫描 / 换音频。 */
+  const invalidateRepairResult = useCallback(() => {
+    engine.stop();
+    engine.setPlaybackBuffer(null);
+    setAuditionKind(null);
+    repairedPcmRef.current = null;
+    repairedKeyRef.current = null;
+    repairedBufferRef.current = null;
+    setRepairedResult(null);
+    setRepairStale(false);
+  }, [engine]);
+
+  /**
+   * 逐声道扫描原始 PCM（独立 Worker）。token 单调递增：连续扫描 / 换
+   * 音频时旧结果在 await 后静默丢弃，只有最新一次扫描能写入列表。
+   * 跨声道合并在主线程完成（纯函数，开销可忽略）；扫描结果默认全选。
+   */
+  const runPopScan = useCallback(async () => {
+    const buffer = currentBufferRef.current;
+    if (!buffer) return;
+    const token = ++popTokenRef.current;
+    // 重新扫描：旧修复结果（试听缓冲、过期态）一并作废
+    invalidateRepairResult();
+    setPopScanning(true);
+    setPopError(null);
+    setPopEvents(null);
+    try {
+      const runs = await popClient.scan(buffer);
+      if (token !== popTokenRef.current) return; // 又扫描或换了音频
+      const events = mergeCrossChannelRuns(runs, buffer.sampleRate);
+      setPopEvents(events);
+      setPopChecked(new Set(events.map((e) => e.id)));
+      setPopScanning(false);
+    } catch (err) {
+      if (err instanceof PopScanSupersededError) return;
+      if (token !== popTokenRef.current) return;
+      setPopEvents(null);
+      setPopScanning(false);
+      setPopError(err instanceof Error ? err.message : '爆音扫描失败。');
+    }
+  }, [popClient, invalidateRepairResult]);
+
+  const togglePopChecked = useCallback((id: string) => {
+    setPopChecked((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+
+  const selectAllPops = useCallback(
+    (checked: boolean) => {
+      setPopChecked(checked && popEvents ? new Set(popEvents.map((e) => e.id)) : new Set());
+    },
+    [popEvents],
+  );
+
+  /** 单处试听：在原始音频上从该处前 0.2s 起播放约 0.7s（到点自动停）。 */
+  const previewPopEvent = useCallback(
+    (ev: PopEvent) => {
+      if (!engine.hasBuffer) return;
+      stopAudition();
+      previewRef.current = null;
+      const from = Math.max(0, ev.start - 0.2);
+      const to = Math.min(duration, ev.end + 0.5);
+      engine.play(from, to);
+      setPlayhead(from);
+      setPlaying(true);
+    },
+    [engine, duration, stopAudition],
+  );
+
+  /** 生成修复音频：只在勾选事件的受影响声道内插值，一次计算，试听 / 下载同源。 */
+  const processPopRepair = useCallback(() => {
+    const buffer = currentBufferRef.current;
+    if (!buffer) {
+      setPopError('尚未导入音频，无法修复爆音。');
+      return;
+    }
+    const selected = (popEvents ?? []).filter((e) => popChecked.has(e.id));
+    try {
+      const pcm = repairPops(buffer, selected);
+      const audioBuffer = pcmToAudioBuffer(pcm, engine.getContext());
+      repairedPcmRef.current = pcm;
+      repairedKeyRef.current = popCheckedKey(popEvents, popChecked);
+      repairedBufferRef.current = audioBuffer;
+      setRepairedResult(pcm);
+      setRepairStale(false);
+      setPopError(null);
+    } catch (err) {
+      repairedPcmRef.current = null;
+      repairedKeyRef.current = null;
+      repairedBufferRef.current = null;
+      setRepairedResult(null);
+      setPopError(err instanceof Error ? err.message : '爆音修复失败。');
+    }
+  }, [engine, popEvents, popChecked, popCheckedKey]);
+
+  /** 试听修复后的完整音频（与下载同源）；再点一次停止。 */
+  const toggleRepairedAudition = useCallback(() => {
+    if (!repairedBufferRef.current) return;
+    if (auditionKind !== null) {
+      stopAudition();
+      return;
+    }
+    previewRef.current = null;
+    engine.setPlaybackBuffer(repairedBufferRef.current);
+    const from =
+      playhead >= repairedBufferRef.current.duration - 0.05 ? 0 : playhead;
+    setPlayhead(from);
+    engine.play(from);
+    setPlaying(true);
+    setAuditionKind('repaired');
+  }, [engine, auditionKind, playhead, stopAudition]);
+
+  /** 下载修复后完整音频的 16-bit PCM WAV（等长 / 声道 / 采样率不变）。 */
+  const downloadRepairedWav = useCallback(() => {
+    const pcm = repairedPcmRef.current;
+    if (!pcm) return;
+    try {
+      const wav = encodeRepairedWav(pcm);
+      const name = (fileName ?? 'podcast').replace(/\.[^.]+$/, '');
+      downloadBlob(
+        `${name}.repaired.wav`,
+        new Blob([wav.buffer as ArrayBuffer], { type: 'audio/wav' }),
+      );
+    } catch (err) {
+      setPopError(err instanceof Error ? err.message : 'WAV 编码失败，未下载文件。');
+    }
+  }, [fileName]);
+
+  // 勾选或扫描结果变化：与生成时快照不同即过期，需重新生成。
+  useEffect(() => {
+    const key = repairedKeyRef.current;
+    setRepairStale(key !== null && key !== popCheckedKey(popEvents, popChecked));
+  }, [popEvents, popChecked, popCheckedKey]);
 
   const addAtPlayhead = useCallback(() => {
     chaptersApi.createAtPlayhead(playhead);
@@ -1142,7 +1337,7 @@ export default function App() {
                 error={muteError}
                 hasResult={mutedResult !== null}
                 stale={muteStale}
-                auditioning={auditioning}
+                auditioning={auditionKind === 'muted'}
                 onAdd={addMuteRegion}
                 onUpdate={updateMuteRegion}
                 onRemove={removeMuteRegion}
@@ -1151,6 +1346,23 @@ export default function App() {
                 onProcess={processMuting}
                 onToggleAudition={toggleAudition}
                 onDownload={downloadMutedWav}
+              />
+              <PopRepairPanel
+                channelCount={currentBufferRef.current?.numberOfChannels ?? 0}
+                events={popEvents}
+                scanning={popScanning}
+                error={popError}
+                checkedIds={popChecked}
+                onToggleChecked={togglePopChecked}
+                onSelectAll={selectAllPops}
+                onScan={runPopScan}
+                onPreviewEvent={previewPopEvent}
+                hasResult={repairedResult !== null}
+                stale={repairStale}
+                auditioning={auditionKind === 'repaired'}
+                onRepair={processPopRepair}
+                onToggleAudition={toggleRepairedAudition}
+                onDownload={downloadRepairedWav}
               />
               <RepeatSearchPanel
                 sample={selected}

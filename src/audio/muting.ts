@@ -44,6 +44,14 @@ export interface MutedPcm {
   ranges: PreparedMuteRange[];
 }
 
+/** 等长多声道 PCM 的结构类型（消音 / 爆音修复结果共用试听缓冲构造）。 */
+export interface PcmData {
+  channels: Float32Array[];
+  sampleRate: number;
+  numberOfChannels: number;
+  length: number;
+}
+
 /** 消音起止包络的最大长度：20 毫秒。 */
 export const MAX_FADE_MS = 20;
 export const MAX_FADE_SEC = MAX_FADE_MS / 1000;
@@ -181,7 +189,7 @@ export function encodeMutedWav(pcm: MutedPcm): Uint8Array {
  * 把处理后的 PCM 载入为 Web Audio AudioBuffer，供处理结果试听。
  * 试听与 WAV 下载来自同一份 MutedPcm，保证「听到的」即「下载的」。
  */
-export function pcmToAudioBuffer(pcm: MutedPcm, ctx: BaseAudioContext): AudioBuffer {
+export function pcmToAudioBuffer(pcm: PcmData, ctx: BaseAudioContext): AudioBuffer {
   const audioBuffer = ctx.createBuffer(pcm.numberOfChannels, pcm.length, Math.round(pcm.sampleRate));
   for (let ch = 0; ch < pcm.numberOfChannels; ch++) {
     const out = audioBuffer.getChannelData(ch);
