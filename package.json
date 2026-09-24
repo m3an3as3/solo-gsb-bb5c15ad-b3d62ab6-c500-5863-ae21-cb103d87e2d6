@@ -1,0 +1,34 @@
+{
+  "name": "podcast-chapter-studio",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview",
+    "test": "npm run test:ops && npm run test:chain && npm run test:history && npm run test:silence && npm run test:loudness && npm run test:fade && npm run test:import && npm run test:transcript && npm run test:audiopack && npm run test:muting && npm run test:repeat",
+    "test:ops": "esbuild scripts/test-chapterOps.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/test-ops.mjs && node node_modules/.cache/test-ops.mjs",
+    "test:chain": "esbuild scripts/test-chainOps.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/test-chain.mjs && node node_modules/.cache/test-chain.mjs",
+    "test:history": "esbuild scripts/test-history.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/test-history.mjs && node node_modules/.cache/test-history.mjs",
+    "test:silence": "esbuild scripts/test-silence.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/test-silence.mjs && node node_modules/.cache/test-silence.mjs",
+    "test:loudness": "esbuild scripts/test-loudness.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/test-loudness.mjs && node node_modules/.cache/test-loudness.mjs",
+    "test:fade": "esbuild scripts/test-fade.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/test-fade.mjs && node node_modules/.cache/test-fade.mjs",
+    "test:import": "esbuild scripts/test-importChapters.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/test-import.mjs && node node_modules/.cache/test-import.mjs",
+    "test:transcript": "esbuild scripts/test-transcriptCoverage.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/test-transcript.mjs && node node_modules/.cache/test-transcript.mjs",
+    "test:audiopack": "esbuild scripts/test-audioPack.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/test-audiopack.mjs && node node_modules/.cache/test-audiopack.mjs",
+    "test:muting": "esbuild scripts/test-muting.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/test-muting.mjs && node node_modules/.cache/test-muting.mjs",
+    "test:repeat": "esbuild scripts/test-repeatSearch.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/test-repeat.mjs && node node_modules/.cache/test-repeat.mjs"
+  },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "typescript": "^5.6.3",
+    "vite": "^5.4.11"
+  }
+}

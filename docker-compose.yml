@@ -1,0 +1,8 @@
+services:
+  podcast-chapter-studio:
+    build: .
+    image: podcast-chapter-studio
+    ports:
+      # 宿主机端口可用环境变量覆盖：PORT=9090 docker compose up --build
+      - "${PORT:-8080}:80"
+    restart: unless-stopped
