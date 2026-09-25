@@ -10,6 +10,16 @@ import {
 } from './audio/loudness';
 import { PeaksSupersededError, PeaksWorkerClient } from './audio/PeaksWorkerClient';
 import {
+  ClickScanSupersededError,
+  ClickScanWorkerClient,
+} from './audio/ClickScanWorkerClient';
+import {
+  encodeRepairedWav,
+  repairClicks,
+  type ClickEvent,
+  type RepairedPcm,
+} from './audio/clickRepair';
+import {
   RepeatSearchSupersededError,
   RepeatSearchWorkerClient,
 } from './audio/RepeatSearchWorkerClient';
@@ -33,6 +43,7 @@ import {
 import { Waveform } from './components/Waveform';
 import { ChapterList } from './components/ChapterList';
 import { ChainBar } from './components/ChainBar';
+import { ClickRepairPanel } from './components/ClickRepairPanel';
 import { FadePanel } from './components/FadePanel';
 import { ImportDialog } from './components/ImportDialog';
 import { LoudnessPanel } from './components/LoudnessPanel';
@@ -91,6 +102,11 @@ export default function App() {
   const repeatClientRef = useRef<RepeatSearchWorkerClient | null>(null);
   if (!repeatClientRef.current) repeatClientRef.current = new RepeatSearchWorkerClient();
   const repeatClient = repeatClientRef.current;
+
+  // 爆音扫描也在独立 Web Worker 中进行；连续扫描只保留最新一次
+  const clickClientRef = useRef<ClickScanWorkerClient | null>(null);
+  if (!clickClientRef.current) clickClientRef.current = new ClickScanWorkerClient();
+  const clickClient = clickClientRef.current;
 
   const [fileName, setFileName] = useState<string | null>(null);
   const [peaks, setPeaks] = useState<Peaks | null>(null);
@@ -176,6 +192,20 @@ export default function App() {
   const [repeatError, setRepeatError] = useState<string | null>(null);
   /** 单调递增 token：连续搜索 / 样本变化时，旧搜索的结果一律作废 */
   const repeatTokenRef = useRef(0);
+
+  // ---- 短促爆音修复：扫描结果 + 勾选 + 修复结果（试听与下载同源）----
+  const [clickEvents, setClickEvents] = useState<ClickEvent[] | null>(null);
+  const [clickScanning, setClickScanning] = useState(false);
+  const [clickError, setClickError] = useState<string | null>(null);
+  const [clickChecked, setClickChecked] = useState<ReadonlySet<string>>(new Set());
+  /** 单调递增 token：连续扫描 / 换音频时，旧扫描的结果一律作废 */
+  const clickTokenRef = useRef(0);
+  /** 最近一次「修复勾选爆音」的结果 PCM；勾选再变动即作废 */
+  const repairedPcmRef = useRef<RepairedPcm | null>(null);
+  const [repairedResult, setRepairedResult] = useState<RepairedPcm | null>(null);
+  /** 试听用的修复后 AudioBuffer（与 repairedPcmRef 同一份 PCM） */
+  const repairedBufferRef = useRef<AudioBuffer | null>(null);
+  const [clickAuditioning, setClickAuditioning] = useState(false);
 
   /** 弹出一条临时提示；同一手势内相同 key 的提示不重复弹出。 */
   const showNotice = useCallback((msg: string, key: string, durationMs = 2200) => {
@@ -303,6 +333,13 @@ export default function App() {
         }
         return a;
       });
+      setClickAuditioning((a) => {
+        if (a) {
+          engine.setPlaybackBuffer(null);
+          return false;
+        }
+        return a;
+      });
     };
     let raf = 0;
     const tick = () => {
@@ -320,8 +357,9 @@ export default function App() {
       engine.dispose();
       peaksClient.dispose();
       repeatClient.dispose();
+      clickClient.dispose();
     },
-    [engine, peaksClient, repeatClient],
+    [engine, peaksClient, repeatClient, clickClient],
   );
 
   /**
@@ -380,6 +418,17 @@ export default function App() {
         setRepeatHits(null);
         setRepeatError(null);
         setRepeatSearching(false);
+        // 爆音扫描与修复结果按旧缓冲计算：与进行中的扫描一并作废
+        clickTokenRef.current += 1;
+        clickClient.cancel();
+        setClickEvents(null);
+        setClickChecked(new Set());
+        setClickError(null);
+        setClickScanning(false);
+        repairedPcmRef.current = null;
+        repairedBufferRef.current = null;
+        setRepairedResult(null);
+        setClickAuditioning(false);
         currentBufferRef.current = buffer;
         // 复用同一份解码 PCM 做静音与音量质检（不重新解码）
         setRmsWindows(computeRmsWindows(buffer));
@@ -396,7 +445,7 @@ export default function App() {
         setLoadPhase('idle');
       }
     },
-    [engine, resetChapters, runPeaks, repeatClient],
+    [engine, resetChapters, runPeaks, repeatClient, clickClient],
   );
 
   /** 峰值计算失败后的恢复入口：复用保留的 AudioBuffer，不再重新解码。 */
@@ -541,6 +590,7 @@ export default function App() {
       engine.stop();
       if (restoreOriginal) engine.setPlaybackBuffer(null);
       setAuditioning(false);
+      setClickAuditioning(false);
     },
     [engine],
   );
@@ -709,6 +759,7 @@ export default function App() {
     engine.stop();
     engine.setPlaybackBuffer(null);
     setAuditioning(false);
+    setClickAuditioning(false);
     mutedPcmRef.current = null;
     mutedFromRegionsRef.current = null;
     mutedBufferRef.current = null;
@@ -791,6 +842,7 @@ export default function App() {
       return;
     }
     previewRef.current = null;
+    setClickAuditioning(false); // 爆音修复试听若在进行，随缓冲切换一并结束
     engine.setPlaybackBuffer(mutedBufferRef.current);
     const from = playhead >= mutedBufferRef.current.duration - 0.05 ? 0 : playhead;
     setPlayhead(from);
@@ -833,6 +885,142 @@ export default function App() {
       end: r.endFrame / buffer.sampleRate,
     }));
   }, [muteRegions, duration]);
+
+  // ---- 短促爆音修复 ----
+  /**
+   * 勾选发生任何变动 / 重新扫描：保留原始 AudioBuffer 与现有章节不动，仅作废
+   * 已生成的修复结果（试听停止、结果清空，等待重新「修复勾选爆音」）。
+   */
+  const invalidateClickResult = useCallback(() => {
+    engine.stop();
+    engine.setPlaybackBuffer(null);
+    setAuditioning(false);
+    setClickAuditioning(false);
+    repairedPcmRef.current = null;
+    repairedBufferRef.current = null;
+    setRepairedResult(null);
+  }, [engine]);
+
+  /**
+   * 按声道扫描原始 PCM 中的短促爆音。计算在 Worker 中进行；token 单调
+   * 递增，连续扫描 / 换音频时旧结果在每个 await 后被静默丢弃，只有最新
+   * 一次扫描能写入命中列表。扫描完成后默认全部勾选。
+   */
+  const runClickScan = useCallback(async () => {
+    const buffer = currentBufferRef.current;
+    if (!buffer) return;
+    const token = ++clickTokenRef.current;
+    invalidateClickResult();
+    setClickScanning(true);
+    setClickError(null);
+    setClickEvents(null);
+    setClickChecked(new Set());
+    try {
+      const events = await clickClient.scan(buffer);
+      if (token !== clickTokenRef.current) return; // 已有更新的扫描或已换音频
+      setClickEvents(events);
+      setClickChecked(new Set(events.map((e) => e.id)));
+      setClickScanning(false);
+    } catch (err) {
+      if (err instanceof ClickScanSupersededError) return;
+      if (token !== clickTokenRef.current) return;
+      setClickEvents(null);
+      setClickScanning(false);
+      setClickError(err instanceof Error ? err.message : '爆音扫描失败。');
+    }
+  }, [clickClient, invalidateClickResult]);
+
+  const toggleClickChecked = useCallback(
+    (id: string) => {
+      invalidateClickResult();
+      setClickChecked((prev) => {
+        const next = new Set(prev);
+        if (next.has(id)) next.delete(id);
+        else next.add(id);
+        return next;
+      });
+    },
+    [invalidateClickResult],
+  );
+
+  const setAllClickChecked = useCallback(
+    (check: boolean) => {
+      invalidateClickResult();
+      setClickChecked(check ? new Set((clickEvents ?? []).map((e) => e.id)) : new Set());
+    },
+    [clickEvents, invalidateClickResult],
+  );
+
+  /** 试听某处爆音：播放原始音频中该处前后 0.6s（到点自动停止）。 */
+  const previewClickEvent = useCallback(
+    (ev: ClickEvent) => {
+      if (!engine.hasBuffer) return;
+      stopAudition();
+      previewRef.current = null;
+      const from = Math.max(0, ev.start - 0.6);
+      engine.play(from, Math.min(duration, ev.end + 0.6));
+      setPlayhead(from);
+      setPlaying(true);
+    },
+    [engine, stopAudition, duration],
+  );
+
+  /** 生成修复后的完整音频：一次计算，试听与下载共用这同一份 PCM。 */
+  const repairCheckedClicks = useCallback(() => {
+    const buffer = currentBufferRef.current;
+    if (!buffer) {
+      setClickError('尚未导入音频，无法修复爆音。');
+      return;
+    }
+    try {
+      const selected = (clickEvents ?? []).filter((e) => clickChecked.has(e.id));
+      const pcm = repairClicks(buffer, selected);
+      const audioBuffer = pcmToAudioBuffer(pcm, engine.getContext());
+      repairedPcmRef.current = pcm;
+      repairedBufferRef.current = audioBuffer;
+      setRepairedResult(pcm);
+      setClickError(null);
+    } catch (err) {
+      repairedPcmRef.current = null;
+      repairedBufferRef.current = null;
+      setRepairedResult(null);
+      setClickError(err instanceof Error ? err.message : '爆音修复失败。');
+    }
+  }, [engine, clickEvents, clickChecked]);
+
+  /** 试听修复后的完整音频（与下载同源）；再点一次停止。 */
+  const toggleClickAudition = useCallback(() => {
+    const buf = repairedBufferRef.current;
+    if (!buf) return;
+    if (clickAuditioning) {
+      stopAudition();
+      return;
+    }
+    stopAudition(); // 停掉进行中的播放 / 其他试听并切回原始缓冲
+    previewRef.current = null;
+    engine.setPlaybackBuffer(buf);
+    const from = playhead >= buf.duration - 0.05 ? 0 : playhead;
+    setPlayhead(from);
+    engine.play(from);
+    setPlaying(true);
+    setClickAuditioning(true);
+  }, [engine, clickAuditioning, playhead, stopAudition]);
+
+  /** 下载修复后完整音频的 16-bit PCM WAV（总时长 / 声道 / 采样率不变）。 */
+  const downloadRepairedWav = useCallback(() => {
+    const pcm = repairedPcmRef.current;
+    if (!pcm) return;
+    try {
+      const wav = encodeRepairedWav(pcm);
+      const name = (fileName ?? 'podcast').replace(/\.[^.]+$/, '');
+      downloadBlob(
+        `${name}.repaired.wav`,
+        new Blob([wav.buffer as ArrayBuffer], { type: 'audio/wav' }),
+      );
+    } catch (err) {
+      setClickError(err instanceof Error ? err.message : 'WAV 编码失败，未下载文件。');
+    }
+  }, [fileName]);
 
   const addAtPlayhead = useCallback(() => {
     chaptersApi.createAtPlayhead(playhead);
@@ -1159,6 +1347,22 @@ export default function App() {
                 error={repeatError}
                 onSearch={runRepeatSearch}
                 onPreview={previewRepeatHit}
+              />
+              <ClickRepairPanel
+                events={clickEvents}
+                scanning={clickScanning}
+                error={clickError}
+                checked={clickChecked}
+                numberOfChannels={currentBufferRef.current?.numberOfChannels ?? 0}
+                hasResult={repairedResult !== null}
+                auditioning={clickAuditioning}
+                onScan={runClickScan}
+                onToggle={toggleClickChecked}
+                onToggleAll={setAllClickChecked}
+                onPreview={previewClickEvent}
+                onRepair={repairCheckedClicks}
+                onToggleAudition={toggleClickAudition}
+                onDownload={downloadRepairedWav}
               />
               {selected ? (
                 <>

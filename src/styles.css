@@ -1188,3 +1188,76 @@ b.imp-status-valid {
   color: var(--muted);
   font-size: 12px;
 }
+
+/* ---- 短促爆音修复 ---- */
+
+.click-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.click-toolbar .click-select-all {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 5px;
+  margin-bottom: 0;
+  cursor: pointer;
+  color: var(--text);
+}
+
+.click-panel input[type='checkbox'] {
+  padding: 0;
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.click-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+.click-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 4px;
+  border-radius: 6px;
+  font-size: 12px;
+}
+
+.click-row:hover {
+  background: rgba(94, 177, 255, 0.06);
+}
+
+.click-time {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.click-channels {
+  flex: 1;
+  min-width: 0;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.click-len {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.click-row button {
+  padding: 2px 8px;
+  font-size: 12px;
+}

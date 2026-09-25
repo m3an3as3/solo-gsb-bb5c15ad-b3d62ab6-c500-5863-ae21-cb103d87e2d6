@@ -177,11 +177,19 @@ export function encodeMutedWav(pcm: MutedPcm): Uint8Array {
   return encodeWavPcm16(buffer, { startSample: 0, endSample: pcm.length });
 }
 
+/** 处理后 PCM 的最小结构（MutedPcm 与爆音修复的 RepairedPcm 均满足）。 */
+export interface PcmData {
+  channels: Float32Array[];
+  sampleRate: number;
+  numberOfChannels: number;
+  length: number;
+}
+
 /**
  * 把处理后的 PCM 载入为 Web Audio AudioBuffer，供处理结果试听。
- * 试听与 WAV 下载来自同一份 MutedPcm，保证「听到的」即「下载的」。
+ * 试听与 WAV 下载来自同一份处理结果 PCM，保证「听到的」即「下载的」。
  */
-export function pcmToAudioBuffer(pcm: MutedPcm, ctx: BaseAudioContext): AudioBuffer {
+export function pcmToAudioBuffer(pcm: PcmData, ctx: BaseAudioContext): AudioBuffer {
   const audioBuffer = ctx.createBuffer(pcm.numberOfChannels, pcm.length, Math.round(pcm.sampleRate));
   for (let ch = 0; ch < pcm.numberOfChannels; ch++) {
     const out = audioBuffer.getChannelData(ch);
